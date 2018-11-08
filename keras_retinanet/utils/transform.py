@@ -67,6 +67,54 @@ def _random_vector(min, max, prng=DEFAULT_PRNG):
     return prng.uniform(min, max)
 
 
+def skew(image,skew_amount=40):
+    w, h = image.size
+
+    x1 = 0
+    x2 = h
+    y1 = 0
+    y2 = w
+
+    original_plane = [(y1, x1), (y2, x1), (y2, x2), (y1, x2)]
+    
+    new_plane = [(y1, x1 - skew_amount),  # Top Left
+                (y2, x1),                # Top Right
+                (y2, x2),                # Bottom Right
+                (y1, x2 + skew_amount)]  # Bottom Left
+
+    matrix = []
+
+    for p1, p2 in zip(new_plane, original_plane):
+        matrix.append([p1[0], p1[1], 1, 0, 0, 0, -p2[0] * p1[0], -p2[0] * p1[1]])
+        matrix.append([0, 0, 0, p1[0], p1[1], 1, -p2[1] * p1[0], -p2[1] * p1[1]])
+
+    A = np.matrix(matrix, dtype=np.float)
+    B = np.array(original_plane).reshape(8)
+    perspective_skew_coefficients_matrix = np.dot(np.linalg.pinv(A), B)
+    perspective_skew_coefficients_matrix = np.array(perspective_skew_coefficients_matrix).reshape(8)
+    return image.transform(image.size,
+                                   Image.PERSPECTIVE,
+                                   perspective_skew_coefficients_matrix,
+                                   resample=Image.BICUBIC)
+
+def skewnp(image,skew_amount=40):
+    h,w,c=image.shape
+    pts1 = np.float32([[10,10],[h-10,10],[0,w],[h,w]])
+    pts2 = np.float32([[0,0],[h,0],[0,w],[h,w]])
+    M = cv2.getPerspectiveTransform(pts1,pts2)
+    dst = cv2.warpPerspective(image,M,(h,w))
+
+def warpPoints(pts,M):
+    out = np.zeros_like(pts)
+    for i,point in enumerate(pts):
+        point = np.append(point,1)
+        deno=np.dot(M[2,:],point)
+        #deno=M[2,0]*point[0] + M[2,1]*point[1] + M[2,2]
+        #print('DENO {}     DENO1: {}'.format(deno,deno1))
+        #out[i] = np.dot(M[0,:],point)/deno + np.dot(M[1,:],point)/deno
+        out[i] = np.dot(M[0,:],point)/deno + np.dot(M[1,:],point)/deno
+    return out
+
 def rotation(angle):
     """ Construct a homogeneous 2D rotation matrix.
     Args
@@ -79,6 +127,7 @@ def rotation(angle):
         [np.sin(angle),  np.cos(angle), 0],
         [0, 0, 1]
     ])
+    
 
 
 def random_rotation(min, max, prng=DEFAULT_PRNG):

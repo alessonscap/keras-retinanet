@@ -18,7 +18,7 @@ import keras
 from keras.utils import get_file
 import keras_resnet
 import keras_resnet.models
-
+from ..layers.gaussian_noise import GaussianNoiseOur
 from . import retinanet
 from . import Backbone
 from ..utils.image import preprocess_image
@@ -28,8 +28,9 @@ class ResNetBackbone(Backbone):
     """ Describes backbone information and provides utility functions.
     """
 
-    def __init__(self, backbone):
+    def __init__(self, backbone,noise_aug_std=None):
         super(ResNetBackbone, self).__init__(backbone)
+        self.noise_aug_std=noise_aug_std
         self.custom_objects.update(keras_resnet.custom_objects)
 
     def retinanet(self, *args, **kwargs):
@@ -72,10 +73,11 @@ class ResNetBackbone(Backbone):
     def preprocess_image(self, inputs):
         """ Takes as input an image and prepares it for being passed through the network.
         """
-        return preprocess_image(inputs, mode='caffe')
+        out=preprocess_image(inputs, mode='caffe')
+        return out
 
 
-def resnet_retinanet(num_classes, backbone='resnet50', inputs=None, modifier=None, **kwargs):
+def resnet_retinanet(num_classes, backbone='resnet50', inputs=None, modifier=None,noise_aug_std=None,dropout_rate=None, **kwargs):
     """ Constructs a retinanet model using a resnet backbone.
 
     Args
@@ -94,11 +96,21 @@ def resnet_retinanet(num_classes, backbone='resnet50', inputs=None, modifier=Non
         else:
             inputs = keras.layers.Input(shape=(None, None, 3))
 
+    
+
     # create the resnet backbone
     if backbone == 'resnet50':
-        resnet = keras_resnet.models.ResNet50(inputs, include_top=False, freeze_bn=True)
+        if noise_aug_std is not None:
+            from .our_keras_resnet import ResNet50
+            resnet = ResNet50(inputs, include_top=False, freeze_bn=True,noise_aug_std=noise_aug_std)
+        else:
+            resnet = keras_resnet.models.ResNet50(inputs, include_top=False, freeze_bn=True)
     elif backbone == 'resnet101':
-        resnet = keras_resnet.models.ResNet101(inputs, include_top=False, freeze_bn=True)
+        if noise_aug_std is not None:
+            from .our_keras_resnet import ResNet101
+            resnet = ResNet101(inputs, include_top=False, freeze_bn=True,noise_aug_std=noise_aug_std)
+        else:
+            resnet = keras_resnet.models.ResNet101(inputs, include_top=False, freeze_bn=True)
     elif backbone == 'resnet152':
         resnet = keras_resnet.models.ResNet152(inputs, include_top=False, freeze_bn=True)
     else:
@@ -107,9 +119,18 @@ def resnet_retinanet(num_classes, backbone='resnet50', inputs=None, modifier=Non
     # invoke modifier if given
     if modifier:
         resnet = modifier(resnet)
-
+        
+    # if noise_aug_std is not None:
+    #     model = 
+    #     inputs2 = keras.layers.Input(shape=(None, None, 3))
+    #     x = keras.layers.GaussianNoise(stddev=noise_aug_std)(inputs2)
+    #     out = resnet(x)
+    #     model = keras.models.Model(inputs=inputs2,outputs=out)
+    #     inputs=inputs2
+    # else:
+    #     model = resnet
     # create the full model
-    return retinanet.retinanet(inputs=inputs, num_classes=num_classes, backbone_layers=resnet.outputs[1:], **kwargs)
+    return retinanet.retinanet(inputs=inputs, num_classes=num_classes, backbone_layers=resnet.outputs[1:],dropout_rate=dropout_rate, **kwargs)
 
 
 def resnet50_retinanet(num_classes, inputs=None, **kwargs):

@@ -26,7 +26,6 @@ from ..utils.anchors import (
     anchors_for_shape,
     guess_shapes
 )
-from ..utils.config import parse_anchor_parameters
 from ..utils.image import (
     TransformParameters,
     adjust_transform_for_image,
@@ -49,11 +48,12 @@ class Generator(object):
         shuffle_groups=True,
         image_min_side=800,
         image_max_side=1333,
+        anchors_ratios=None,
+        anchors_scales=None,
         transform_parameters=None,
         compute_anchor_targets=anchor_targets_bbox,
         compute_shapes=guess_shapes,
         preprocess_image=preprocess_image,
-        config=None
     ):
         """ Initialize Generator object.
 
@@ -79,8 +79,8 @@ class Generator(object):
         self.compute_anchor_targets = compute_anchor_targets
         self.compute_shapes         = compute_shapes
         self.preprocess_image       = preprocess_image
-        self.config                 = config
-
+        self.anchors_ratios = anchors_ratios
+        self.anchors_scales = anchors_scales
         self.group_index = 0
         self.lock        = threading.Lock()
 
@@ -95,16 +95,6 @@ class Generator(object):
         """ Number of classes in the dataset.
         """
         raise NotImplementedError('num_classes method not implemented')
-
-    def has_label(self, label):
-        """ Returns True if label is a known label.
-        """
-        raise NotImplementedError('has_label method not implemented')
-
-    def has_name(self, name):
-        """ Returns True if name is a known class.
-        """
-        raise NotImplementedError('has_name method not implemented')
 
     def name_to_label(self, name):
         """ Map name to label.
@@ -134,27 +124,23 @@ class Generator(object):
     def load_annotations_group(self, group):
         """ Load annotations for all images in group.
         """
-        annotations_group = [self.load_annotations(image_index) for image_index in group]
-        for annotations in annotations_group:
-            assert(isinstance(annotations, dict)), '\'load_annotations\' should return a list of dictionaries, received: {}'.format(type(annotations))
-            assert('labels' in annotations), '\'load_annotations\' should return a list of dictionaries that contain \'labels\' and \'bboxes\'.'
-            assert('bboxes' in annotations), '\'load_annotations\' should return a list of dictionaries that contain \'labels\' and \'bboxes\'.'
-
-        return annotations_group
+        return [self.load_annotations(image_index) for image_index in group]
 
     def filter_annotations(self, image_group, annotations_group, group):
         """ Filter annotations by removing those that are outside of the image bounds or whose width/height < 0.
         """
         # test all annotations
         for index, (image, annotations) in enumerate(zip(image_group, annotations_group)):
+            assert(isinstance(annotations, np.ndarray)), '\'load_annotations\' should return a list of numpy arrays, received: {}'.format(type(annotations))
+
             # test x2 < x1 | y2 < y1 | x1 < 0 | y1 < 0 | x2 <= 0 | y2 <= 0 | x2 >= image.shape[1] | y2 >= image.shape[0]
             invalid_indices = np.where(
-                (annotations['bboxes'][:, 2] <= annotations['bboxes'][:, 0]) |
-                (annotations['bboxes'][:, 3] <= annotations['bboxes'][:, 1]) |
-                (annotations['bboxes'][:, 0] < 0) |
-                (annotations['bboxes'][:, 1] < 0) |
-                (annotations['bboxes'][:, 2] > image.shape[1]) |
-                (annotations['bboxes'][:, 3] > image.shape[0])
+                (annotations[:, 2] <= annotations[:, 0]) |
+                (annotations[:, 3] <= annotations[:, 1]) |
+                (annotations[:, 0] < 0) |
+                (annotations[:, 1] < 0) |
+                (annotations[:, 2] > image.shape[1]) |
+                (annotations[:, 3] > image.shape[0])
             )[0]
 
             # delete invalid indices
@@ -162,10 +148,9 @@ class Generator(object):
                 warnings.warn('Image with id {} (shape {}) contains the following invalid boxes: {}.'.format(
                     group[index],
                     image.shape,
-                    annotations['bboxes'][invalid_indices, :]
+                    [annotations[invalid_index, :] for invalid_index in invalid_indices]
                 ))
-                for k in annotations_group[index].keys():
-                    annotations_group[index][k] = np.delete(annotations[k], invalid_indices, axis=0)
+                annotations_group[index] = np.delete(annotations, invalid_indices, axis=0)
 
         return image_group, annotations_group
 
@@ -174,35 +159,20 @@ class Generator(object):
         """
         return [self.load_image(image_index) for image_index in group]
 
-    def random_transform_group_entry(self, image, annotations, transform=None):
+    def random_transform_group_entry(self, image, annotations):
         """ Randomly transforms image and annotation.
         """
         # randomly transform both image and annotations
-        if transform is not None or self.transform_generator:
-            if transform is None:
-                transform = adjust_transform_for_image(next(self.transform_generator), image, self.transform_parameters.relative_translation)
-
-            # apply transformation to image
-            image = apply_transform(transform, image, self.transform_parameters)
+        if self.transform_generator:
+            transform = adjust_transform_for_image(next(self.transform_generator), image, self.transform_parameters.relative_translation)
+            image     = apply_transform(transform, image, self.transform_parameters)
 
             # Transform the bounding boxes in the annotations.
-            annotations['bboxes'] = annotations['bboxes'].copy()
-            for index in range(annotations['bboxes'].shape[0]):
-                annotations['bboxes'][index, :] = transform_aabb(transform, annotations['bboxes'][index, :])
+            annotations = annotations.copy()
+            for index in range(annotations.shape[0]):
+                annotations[index, :4] = transform_aabb(transform, annotations[index, :4])
 
         return image, annotations
-
-    def random_transform_group(self, image_group, annotations_group):
-        """ Randomly transforms each image and its annotations.
-        """
-
-        assert(len(image_group) == len(annotations_group))
-
-        for index in range(len(image_group)):
-            # transform a single group entry
-            image_group[index], annotations_group[index] = self.random_transform_group_entry(image_group[index], annotations_group[index])
-
-        return image_group, annotations_group
 
     def resize_image(self, image):
         """ Resize an image using image_min_side and image_max_side.
@@ -215,22 +185,27 @@ class Generator(object):
         # preprocess the image
         image = self.preprocess_image(image)
 
+        # randomly transform image and annotations
+        image, annotations = self.random_transform_group_entry(image, annotations)
+
         # resize image
         image, image_scale = self.resize_image(image)
 
         # apply resizing to annotations too
-        annotations['bboxes'] *= image_scale
+        annotations[:, :4] *= image_scale
 
         return image, annotations
 
     def preprocess_group(self, image_group, annotations_group):
         """ Preprocess each image and its annotations in its group.
         """
-        assert(len(image_group) == len(annotations_group))
-
-        for index in range(len(image_group)):
+        for index, (image, annotations) in enumerate(zip(image_group, annotations_group)):
             # preprocess a single group entry
-            image_group[index], annotations_group[index] = self.preprocess_group_entry(image_group[index], annotations_group[index])
+            image, annotations = self.preprocess_group_entry(image, annotations)
+
+            # copy processed data back to group
+            image_group[index]       = image
+            annotations_group[index] = annotations
 
         return image_group, annotations_group
 
@@ -266,26 +241,23 @@ class Generator(object):
         return image_batch
 
     def generate_anchors(self, image_shape):
-        anchor_params = None
-        if self.config and 'anchor_parameters' in self.config:
-            anchor_params = parse_anchor_parameters(self.config)
-        return anchors_for_shape(image_shape, anchor_params=anchor_params, shapes_callback=self.compute_shapes)
+        return anchors_for_shape(image_shape, shapes_callback=self.compute_shapes,ratios=self.anchors_ratios,scales=self.anchors_scales)
 
-    def compute_targets(self, image_group, annotations_group):
+    def compute_targets(self, image_group, annotations_group,anchors_ratios=None,anchors_scales=None):
         """ Compute target outputs for the network using images and their annotations.
         """
         # get the max image shape
         max_shape = tuple(max(image.shape[x] for image in image_group) for x in range(3))
         anchors   = self.generate_anchors(max_shape)
 
-        batches = self.compute_anchor_targets(
+        labels_batch, regression_batch, _ = self.compute_anchor_targets(
             anchors,
             image_group,
             annotations_group,
             self.num_classes()
         )
 
-        return list(batches)
+        return [regression_batch, labels_batch]
 
     def compute_input_output(self, group):
         """ Compute inputs and target outputs for the network.
@@ -296,9 +268,6 @@ class Generator(object):
 
         # check validity of annotations
         image_group, annotations_group = self.filter_annotations(image_group, annotations_group, group)
-
-        # randomly transform data
-        image_group, annotations_group = self.random_transform_group(image_group, annotations_group)
 
         # perform preprocessing steps
         image_group, annotations_group = self.preprocess_group(image_group, annotations_group)

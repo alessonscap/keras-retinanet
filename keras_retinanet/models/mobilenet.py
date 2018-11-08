@@ -15,8 +15,9 @@ limitations under the License.
 """
 
 import keras
-from keras.applications import mobilenet
+from keras.applications.mobilenet import mobilenet
 from keras.utils import get_file
+from ..layers.gaussian_noise import GaussianNoiseOur
 from ..utils.image import preprocess_image
 
 from . import retinanet
@@ -58,7 +59,7 @@ class MobileNetBackbone(Backbone):
             alpha_text = '2_5'
 
         model_name = 'mobilenet_{}_{}_tf_no_top.h5'.format(alpha_text, rows)
-        weights_url = mobilenet.mobilenet.BASE_WEIGHT_PATH + model_name
+        weights_url = mobilenet.BASE_WEIGHT_PATH + model_name
         weights_path = get_file(model_name, weights_url, cache_subdir='models')
 
         return weights_path
@@ -77,7 +78,7 @@ class MobileNetBackbone(Backbone):
         return preprocess_image(inputs, mode='tf')
 
 
-def mobilenet_retinanet(num_classes, backbone='mobilenet224_1.0', inputs=None, modifier=None, **kwargs):
+def mobilenet_retinanet(num_classes, backbone='mobilenet224_1.0', inputs=None, modifier=None,noise_aug_std=None,dropout_rate=None, **kwargs):
     """ Constructs a retinanet model using a mobilenet backbone.
 
     Args
@@ -94,8 +95,12 @@ def mobilenet_retinanet(num_classes, backbone='mobilenet224_1.0', inputs=None, m
     # choose default input
     if inputs is None:
         inputs = keras.layers.Input((None, None, 3))
+    if noise_aug_std is not None:   
+        inputs2= GaussianNoiseOur(stddev=noise_aug_std,scale=1)(inputs)
+    else:
+        inputs2 = inputs
 
-    backbone = mobilenet.MobileNet(input_tensor=inputs, alpha=alpha, include_top=False, pooling=None, weights=None)
+    backbone = keras.applications.mobilenet.MobileNet(input_tensor=inputs2, alpha=alpha, include_top=False, pooling=None, weights=None)
 
     # create the full model
     layer_names = ['conv_pw_5_relu', 'conv_pw_11_relu', 'conv_pw_13_relu']
@@ -106,4 +111,4 @@ def mobilenet_retinanet(num_classes, backbone='mobilenet224_1.0', inputs=None, m
     if modifier:
         backbone = modifier(backbone)
 
-    return retinanet.retinanet(inputs=inputs, num_classes=num_classes, backbone_layers=backbone.outputs, **kwargs)
+    return retinanet.retinanet(inputs=inputs, num_classes=num_classes, backbone_layers=backbone.outputs,dropout_rate=dropout_rate, **kwargs)

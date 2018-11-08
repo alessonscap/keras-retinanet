@@ -112,16 +112,6 @@ class PascalVocGenerator(Generator):
         """
         return len(self.classes)
 
-    def has_label(self, label):
-        """ Return True if label is a known label.
-        """
-        return label in self.labels
-
-    def has_name(self, name):
-        """ Returns True if name is a known class.
-        """
-        return name in self.classes
-
     def name_to_label(self, name):
         """ Map name to label.
         """
@@ -155,24 +145,24 @@ class PascalVocGenerator(Generator):
         if class_name not in self.classes:
             raise ValueError('class name \'{}\' not found in classes: {}'.format(class_name, list(self.classes.keys())))
 
-        box = np.zeros((4,))
-        label = self.name_to_label(class_name)
+        box = np.zeros((1, 5))
+        box[0, 4] = self.name_to_label(class_name)
 
         bndbox    = _findNode(element, 'bndbox')
-        box[0] = _findNode(bndbox, 'xmin', 'bndbox.xmin', parse=float) - 1
-        box[1] = _findNode(bndbox, 'ymin', 'bndbox.ymin', parse=float) - 1
-        box[2] = _findNode(bndbox, 'xmax', 'bndbox.xmax', parse=float) - 1
-        box[3] = _findNode(bndbox, 'ymax', 'bndbox.ymax', parse=float) - 1
+        box[0, 0] = _findNode(bndbox, 'xmin', 'bndbox.xmin', parse=float) - 1
+        box[0, 1] = _findNode(bndbox, 'ymin', 'bndbox.ymin', parse=float) - 1
+        box[0, 2] = _findNode(bndbox, 'xmax', 'bndbox.xmax', parse=float) - 1
+        box[0, 3] = _findNode(bndbox, 'ymax', 'bndbox.ymax', parse=float) - 1
 
-        return truncated, difficult, box, label
+        return truncated, difficult, box
 
     def __parse_annotations(self, xml_root):
         """ Parse all annotations under the xml_root.
         """
-        annotations = {'labels': np.empty((len(xml_root.findall('object')),)), 'bboxes': np.empty((len(xml_root.findall('object')), 4))}
+        boxes = np.zeros((0, 5))
         for i, element in enumerate(xml_root.iter('object')):
             try:
-                truncated, difficult, box, label = self.__parse_annotation(element)
+                truncated, difficult, box = self.__parse_annotation(element)
             except ValueError as e:
                 raise_from(ValueError('could not parse object #{}: {}'.format(i, e)), None)
 
@@ -180,11 +170,9 @@ class PascalVocGenerator(Generator):
                 continue
             if difficult and self.skip_difficult:
                 continue
+            boxes = np.append(boxes, box, axis=0)
 
-            annotations['bboxes'][i, :] = box
-            annotations['labels'][i] = label
-
-        return annotations
+        return boxes
 
     def load_annotations(self, image_index):
         """ Load annotations for an image_index.
